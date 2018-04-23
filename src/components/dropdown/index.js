@@ -3,14 +3,13 @@ import React, { PureComponent } from 'react';
 import {
   Text,
   View,
-  FlatList,
+  ScrollView,
   Animated,
   Modal,
   TouchableWithoutFeedback,
   Dimensions,
   Platform,
   ViewPropTypes,
-  I18nManager,
 } from 'react-native';
 import Ripple from 'react-native-material-ripple';
 import { TextField } from 'react-native-material-textfield';
@@ -18,29 +17,26 @@ import { TextField } from 'react-native-material-textfield';
 import DropdownItem from '../item';
 import styles from './styles';
 
+const minMargin = 8;
+const maxMargin = 16;
+
+const valuePropType = PropTypes
+  .oneOfType([
+    PropTypes.string,
+    PropTypes.number,
+  ]);
+
+const labelPropType = PropTypes
+  .oneOfType([
+    PropTypes.string,
+    PropTypes.node,
+  ]);
+
 export default class Dropdown extends PureComponent {
   static defaultProps = {
     hitSlop: { top: 6, right: 4, bottom: 6, left: 4 },
 
     disabled: false,
-
-    data: [],
-
-    valueExtractor: ({ value } = {}, index) => value,
-    labelExtractor: ({ label } = {}, index) => label,
-    propsExtractor: () => null,
-
-    absoluteRTLLayout: false,
-
-    dropdownOffset: {
-      top: 32,
-      left: 0,
-    },
-
-    dropdownMargins: {
-      min: 8,
-      max: 16,
-    },
 
     rippleCentered: false,
     rippleSequential: true,
@@ -55,9 +51,7 @@ export default class Dropdown extends PureComponent {
     rippleOpacity: 0.54,
     shadeOpacity: 0.12,
 
-    rippleDuration: 400,
     animationDuration: 225,
-
     fontSize: 16,
 
     textColor: 'rgba(0, 0, 0, .87)',
@@ -67,15 +61,7 @@ export default class Dropdown extends PureComponent {
     itemCount: 4,
     itemPadding: 8,
 
-    supportedOrientations: [
-      'portrait',
-      'portrait-upside-down',
-      'landscape',
-      'landscape-left',
-      'landscape-right',
-    ],
-
-    useNativeDriver: false,
+    labelHeight: 32,
   };
 
   static propTypes = {
@@ -83,32 +69,6 @@ export default class Dropdown extends PureComponent {
 
     disabled: PropTypes.bool,
 
-    value: PropTypes.oneOfType([
-      PropTypes.string,
-      PropTypes.number,
-    ]),
-
-    data: PropTypes.arrayOf(PropTypes.object),
-
-    valueExtractor: PropTypes.func,
-    labelExtractor: PropTypes.func,
-    propsExtractor: PropTypes.func,
-
-    absoluteRTLLayout: PropTypes.bool,
-
-    dropdownOffset: PropTypes.shape({
-      top: PropTypes.number.isRequired,
-      left: PropTypes.number.isRequired,
-    }),
-
-    dropdownMargins: PropTypes.shape({
-      min: PropTypes.number.isRequired,
-      max: PropTypes.number.isRequired,
-    }),
-
-    dropdownPosition: PropTypes.number,
-
-    rippleColor: PropTypes.string,
     rippleCentered: PropTypes.bool,
     rippleSequential: PropTypes.bool,
 
@@ -122,21 +82,27 @@ export default class Dropdown extends PureComponent {
     rippleOpacity: PropTypes.number,
     shadeOpacity: PropTypes.number,
 
-    rippleDuration: PropTypes.number,
     animationDuration: PropTypes.number,
-
     fontSize: PropTypes.number,
+
+    value: valuePropType,
+
+    data: PropTypes.arrayOf(PropTypes.shape({
+      value: valuePropType,
+      label: labelPropType,
+    })),
 
     textColor: PropTypes.string,
     itemColor: PropTypes.string,
     selectedItemColor: PropTypes.string,
-    disabledItemColor: PropTypes.string,
     baseColor: PropTypes.string,
 
     itemTextStyle: Text.propTypes.style,
 
     itemCount: PropTypes.number,
     itemPadding: PropTypes.number,
+
+    labelHeight: PropTypes.number,
 
     onLayout: PropTypes.func,
     onFocus: PropTypes.func,
@@ -147,12 +113,9 @@ export default class Dropdown extends PureComponent {
     renderAccessory: PropTypes.func,
 
     containerStyle: (ViewPropTypes || View.propTypes).style,
-    overlayStyle: (ViewPropTypes || View.propTypes).style,
     pickerStyle: (ViewPropTypes || View.propTypes).style,
 
-    supportedOrientations: PropTypes.arrayOf(PropTypes.string),
-
-    useNativeDriver: PropTypes.bool,
+    dropdownPosition: PropTypes.number,
   };
 
   constructor(props) {
@@ -162,17 +125,12 @@ export default class Dropdown extends PureComponent {
     this.onClose = this.onClose.bind(this);
     this.onSelect = this.onSelect.bind(this);
     this.onLayout = this.onLayout.bind(this);
-
     this.updateRippleRef = this.updateRef.bind(this, 'ripple');
     this.updateContainerRef = this.updateRef.bind(this, 'container');
     this.updateScrollRef = this.updateRef.bind(this, 'scroll');
-
     this.renderAccessory = this.renderAccessory.bind(this);
-    this.renderItem = this.renderItem.bind(this);
 
-    this.keyExtractor = this.keyExtractor.bind(this);
-
-    this.blur = () => this.onClose();
+    this.blur = this.onClose;
     this.focus = this.onPress;
 
     let { value } = this.props;
@@ -204,16 +162,13 @@ export default class Dropdown extends PureComponent {
 
   onPress(event) {
     let {
-      data,
+      data = [],
       disabled,
       onFocus,
+      labelHeight,
       itemPadding,
-      rippleDuration,
-      dropdownOffset,
-      dropdownMargins: { min: minMargin, max: maxMargin },
+      dropdownPosition,
       animationDuration,
-      absoluteRTLLayout,
-      useNativeDriver,
     } = this.props;
 
     if (disabled) {
@@ -221,12 +176,13 @@ export default class Dropdown extends PureComponent {
     }
 
     let itemCount = data.length;
+    let visibleItemCount = this.visibleItemCount();
+    let tailItemCount = this.tailItemCount();
     let timestamp = Date.now();
 
     if (null != event) {
       /* Adjust event location */
       event.nativeEvent.locationY -= this.rippleInsets().top;
-      event.nativeEvent.locationX -= this.rippleInsets().left;
 
       /* Start ripple directly from event */
       this.ripple.startRipple(event);
@@ -247,18 +203,40 @@ export default class Dropdown extends PureComponent {
     this.container.measureInWindow((x, y, containerWidth, containerHeight) => {
       let { opacity } = this.state;
 
-      /* Adjust coordinates for relative layout in RTL locale */
-      if (I18nManager.isRTL && !absoluteRTLLayout) {
-        x = dimensions.width - (x + containerWidth);
+      let delay = Math.max(0, animationDuration - (Date.now() - timestamp));
+      let selected = this.selectedIndex();
+      let offset = 0;
+
+      if (itemCount > visibleItemCount) {
+        if (null == dropdownPosition) {
+          switch (selected) {
+            case -1:
+              break;
+
+            case 0:
+            case 1:
+              break;
+
+            default:
+              if (selected >= itemCount - tailItemCount) {
+                offset = this.itemSize() * (itemCount - visibleItemCount);
+              } else {
+                offset = this.itemSize() * (selected - 1);
+              }
+          }
+        } else {
+          if (~selected) {
+            if (dropdownPosition < 0) {
+              offset = this.itemSize() * (selected - visibleItemCount - dropdownPosition);
+            } else {
+              offset = this.itemSize() * (selected - dropdownPosition);
+            }
+          }
+        }
       }
 
-      let delay = Math.max(0, rippleDuration - animationDuration - (Date.now() - timestamp));
-      let selected = this.selectedIndex();
-
+      let left = x - maxMargin;
       let leftInset;
-      let left = x
-        + dropdownOffset.left
-        - maxMargin;
 
       if (left > minMargin) {
         leftInset = maxMargin;
@@ -278,7 +256,8 @@ export default class Dropdown extends PureComponent {
       }
 
       let top = y
-        + dropdownOffset.top
+        + Platform.select({ ios: 1, android: 2 })
+        + labelHeight
         - itemPadding;
 
       this.setState({
@@ -293,13 +272,14 @@ export default class Dropdown extends PureComponent {
 
       setTimeout((() => {
         if (this.mounted) {
-          this.resetScrollOffset();
+          if (this.scroll) {
+            this.scroll.scrollTo({ x: 0, y: offset, animated: false });
+          }
 
           Animated
             .timing(opacity, {
               duration: animationDuration,
               toValue: 1,
-              useNativeDriver,
             })
             .start(() => {
               if (this.mounted && 'ios' === Platform.OS) {
@@ -315,15 +295,14 @@ export default class Dropdown extends PureComponent {
     });
   }
 
-  onClose(value = this.state.value) {
-    let { onBlur, animationDuration, useNativeDriver } = this.props;
+  onClose() {
+    let { onBlur, animationDuration } = this.props;
     let { opacity } = this.state;
 
     Animated
       .timing(opacity, {
         duration: animationDuration,
         toValue: 0,
-        useNativeDriver,
       })
       .start(() => {
         this.focused = false;
@@ -333,28 +312,22 @@ export default class Dropdown extends PureComponent {
         }
 
         if (this.mounted) {
-          this.setState({ value, modal: false });
+          this.setState({ modal: false });
         }
       });
   }
 
   onSelect(index) {
-    let {
-      data,
-      valueExtractor,
-      onChangeText,
-      animationDuration,
-      rippleDuration,
-    } = this.props;
+    let { data, onChangeText, animationDuration } = this.props;
+    let { value } = data[index];
 
-    let value = valueExtractor(data[index], index);
-    let delay = Math.max(0, rippleDuration - animationDuration);
+    this.setState({ value });
 
     if ('function' === typeof onChangeText) {
       onChangeText(value, index, data);
     }
 
-    setTimeout(() => this.onClose(value), delay);
+    setTimeout(this.onClose, animationDuration);
   }
 
   onLayout(event) {
@@ -365,38 +338,32 @@ export default class Dropdown extends PureComponent {
     }
   }
 
-  value() {
-    let { value } = this.state;
-
-    return value;
+  isFocused() {
+    return this.focused;
   }
 
   selectedIndex() {
-    let { value } = this.state;
-    let { data, valueExtractor } = this.props;
+    let { data = [] } = this.props;
 
     return data
-      .findIndex((item, index) => null != item && value === valueExtractor(item, index));
+      .findIndex(({ value }) => value === this.state.value);
   }
 
   selectedItem() {
-    let { data } = this.props;
+    let { data = [] } = this.props;
 
-    return data[this.selectedIndex()];
-  }
-
-  isFocused() {
-    return this.focused;
+    return data
+      .find(({ value }) => value === this.state.value);
   }
 
   itemSize() {
     let { fontSize, itemPadding } = this.props;
 
-    return Math.ceil(fontSize * 1.5 + itemPadding * 2);
+    return fontSize * 1.5 + itemPadding * 2;
   }
 
   visibleItemCount() {
-    let { data, itemCount } = this.props;
+    let { data = [], itemCount } = this.props;
 
     return Math.min(data.length, itemCount);
   }
@@ -416,136 +383,36 @@ export default class Dropdown extends PureComponent {
     return { top, right, bottom, left };
   }
 
-  resetScrollOffset() {
-    let { selected } = this.state;
-    let { data, dropdownPosition } = this.props;
-
-    let offset = 0;
-    let itemCount = data.length;
-    let itemSize = this.itemSize();
-    let tailItemCount = this.tailItemCount();
-    let visibleItemCount = this.visibleItemCount();
-
-    if (itemCount > visibleItemCount) {
-      if (null == dropdownPosition) {
-        switch (selected) {
-          case -1:
-            break;
-
-          case 0:
-          case 1:
-            break;
-
-          default:
-            if (selected >= itemCount - tailItemCount) {
-              offset = itemSize * (itemCount - visibleItemCount);
-            } else {
-              offset = itemSize * (selected - 1);
-            }
-        }
-      } else {
-        let index = selected - dropdownPosition;
-
-        if (dropdownPosition < 0) {
-          index -= visibleItemCount;
-        }
-
-        index = Math.max(0, index);
-        index = Math.min(index, itemCount - visibleItemCount);
-
-        if (~selected) {
-          offset = itemSize * index;
-        }
-      }
-    }
-
-    if (this.scroll) {
-      this.scroll.scrollToOffset({ offset, animated: false });
-    }
-  }
-
   updateRef(name, ref) {
     this[name] = ref;
   }
 
-  keyExtractor(item, index) {
-    let { valueExtractor } = this.props;
-
-    return `${index}-${valueExtractor(item, index)}`;
-  }
-
   renderBase(props) {
     let { value } = this.state;
-    let {
-      data,
-      renderBase,
-      labelExtractor,
-      dropdownOffset,
-      renderAccessory = this.renderAccessory,
-    } = this.props;
+    let { renderBase, renderAccessory = this.renderAccessory } = this.props;
 
-    let index = this.selectedIndex();
-    let title;
-
-    if (~index) {
-      title = labelExtractor(data[index], index);
-    }
-
-    if (null == title) {
-      title = value;
-    }
+    let { label = value } = this.selectedItem() || {};
 
     if ('function' === typeof renderBase) {
-      return renderBase({ ...props, title, value, renderAccessory });
+      return renderBase({ ...props, label, value, renderAccessory });
     }
 
-    title = null == title || 'string' === typeof title?
-      title:
-      String(title);
+    let title = null == label || 'string' === typeof label?
+      label:
+      String(label);
 
     return (
-      <TextField
-        label=''
-        labelHeight={dropdownOffset.top - Platform.select({ ios: 1, android: 2 })}
-
-        {...props}
-
-        value={title}
-        editable={false}
-        onChangeText={undefined}
-        renderAccessory={renderAccessory}
-      />
-    );
-  }
-
-  renderRipple() {
-    let {
-      baseColor,
-      rippleColor = baseColor,
-      rippleOpacity,
-      rippleDuration,
-      rippleCentered,
-      rippleSequential,
-    } = this.props;
-
-    let { bottom, ...insets } = this.rippleInsets();
-    let style = {
-      ...insets,
-
-      height: this.itemSize() - bottom,
-      position: 'absolute',
-    };
-
-    return (
-      <Ripple
-        style={style}
-        rippleColor={rippleColor}
-        rippleDuration={rippleDuration}
-        rippleOpacity={rippleOpacity}
-        rippleCentered={rippleCentered}
-        rippleSequential={rippleSequential}
-        ref={this.updateRippleRef}
-      />
+      <View>
+        <TextField
+          {...props}
+          
+          value={title}
+          editable={false}
+          onChangeText={undefined}
+          renderAccessory={renderAccessory}
+        />
+        <Text style={{ position: 'absolute', top: 20, left: 30, color: 'red' }}>{props.StarTag}</Text>
+      </View>
     );
   }
 
@@ -562,79 +429,56 @@ export default class Dropdown extends PureComponent {
     );
   }
 
-  renderItem({ item, index }) {
-    if (null == item) {
-      return null;
-    }
-
+  renderItems() {
     let { selected, leftInset, rightInset } = this.state;
 
     let {
-      valueExtractor,
-      labelExtractor,
-      propsExtractor,
+      data = [],
       textColor,
       itemColor,
-      baseColor,
       selectedItemColor = textColor,
-      disabledItemColor = baseColor,
+      baseColor,
       fontSize,
       itemTextStyle,
+      animationDuration,
       rippleOpacity,
-      rippleDuration,
       shadeOpacity,
+      StarTag
     } = this.props;
 
-    let props = propsExtractor(item, index);
-
-    let { style, disabled }
-      = props
-      = {
-        rippleDuration,
-        rippleOpacity,
-        rippleColor: baseColor,
-
-        shadeColor: baseColor,
-        shadeOpacity,
-
-        ...props,
-
-        onPress: this.onSelect,
-      };
-
-    let value = valueExtractor(item, index);
-    let label = labelExtractor(item, index);
-
-    let title = null == label?
-      value:
-      label;
-
-    let color = disabled?
-      disabledItemColor:
-      ~selected?
-        index === selected?
-          selectedItemColor:
-          itemColor:
-        selectedItemColor;
-
-    let textStyle = { color, fontSize };
-
-    props.style = [
-      style,
-      {
+    let props = {
+      baseColor,
+      fontSize,
+      StarTag,
+      animationDuration,
+      rippleOpacity,
+      shadeOpacity,
+      onPress: this.onSelect,
+      style: {
         height: this.itemSize(),
         paddingLeft: leftInset,
         paddingRight: rightInset,
       },
-    ];
+    };
 
-    return (
-      <DropdownItem index={index} {...props}>
-        <Text style={[styles.item, itemTextStyle, textStyle]} numberOfLines={1}>
-          {title}
-        </Text>
-      </DropdownItem>
-    );
+    return data
+      .map(({ value, label = value }, index) => {
+        let color = ~selected?
+          index === selected?
+            selectedItemColor:
+            itemColor:
+          selectedItemColor;
+
+        let style = { color, fontSize };
+
+        return (
+          <DropdownItem index={index} key={index} {...props}>
+            <Text style={[itemTextStyle, style]} numberOfLines={1}>
+              {label}
+            </Text>
+          </DropdownItem>
+        );
+      });
   }
 
   render() {
@@ -642,7 +486,6 @@ export default class Dropdown extends PureComponent {
       renderBase,
       renderAccessory,
       containerStyle,
-      overlayStyle: overlayStyleOverrides,
       pickerStyle: pickerStyleOverrides,
 
       rippleInsets,
@@ -657,24 +500,33 @@ export default class Dropdown extends PureComponent {
       accessible,
       accessibilityLabel,
 
-      supportedOrientations,
-
       ...props
     } = this.props;
 
+
     let {
-      data,
+      data = [],
       disabled,
+      baseColor,
+      StarTag,
       itemPadding,
       dropdownPosition,
+      animationDuration,
     } = props;
 
     let { left, top, width, opacity, selected, modal } = this.state;
+
+    let dimensions = Dimensions.get('window');
 
     let itemCount = data.length;
     let visibleItemCount = this.visibleItemCount();
     let tailItemCount = this.tailItemCount();
     let itemSize = this.itemSize();
+
+    let overlayStyle = {
+      width: dimensions.width,
+      height: dimensions.height,
+    };
 
     let height = 2 * itemPadding + itemSize * visibleItemCount;
     let translateY = -itemPadding;
@@ -703,14 +555,21 @@ export default class Dropdown extends PureComponent {
       }
     }
 
-    let overlayStyle = { opacity };
-
     let pickerStyle = {
       width,
       height,
       top,
       left,
+      opacity,
       transform: [{ translateY }],
+    };
+
+    let { bottom, ...insets } = this.rippleInsets();
+    let rippleStyle = {
+      ...insets,
+
+      height: itemSize - bottom,
+      position: 'absolute',
     };
 
     let touchableProps = {
@@ -729,36 +588,36 @@ export default class Dropdown extends PureComponent {
         <TouchableWithoutFeedback {...touchableProps}>
           <View pointerEvents='box-only'>
             {this.renderBase(props)}
-            {this.renderRipple()}
+
+            <Ripple
+              style={rippleStyle}
+              rippleColor={baseColor}
+              rippleDuration={animationDuration * 2}
+              rippleOpacity={rippleOpacity}
+              rippleCentered={rippleCentered}
+              rippleSequential={rippleSequential}
+              ref={this.updateRippleRef}
+            />
           </View>
         </TouchableWithoutFeedback>
 
-        <Modal
-          visible={modal}
-          transparent={true}
-          onRequestClose={this.blur}
-          supportedOrientations={supportedOrientations}
-        >
-          <Animated.View
-            style={[styles.overlay, overlayStyle, overlayStyleOverrides]}
-            onStartShouldSetResponder={() => true}
-            onResponderRelease={this.blur}
-          >
-            <View
-              style={[styles.picker, pickerStyle, pickerStyleOverrides]}
-              onStartShouldSetResponder={() => true}
-            >
-              <FlatList
-                ref={this.updateScrollRef}
-                data={data}
-                style={styles.scroll}
-                renderItem={this.renderItem}
-                keyExtractor={this.keyExtractor}
-                scrollEnabled={visibleItemCount < itemCount}
-                contentContainerStyle={styles.scrollContainer}
-              />
+        <Modal visible={modal} transparent={true} onRequestClose={this.onClose}>
+          <TouchableWithoutFeedback onPress={this.onClose}>
+            <View style={overlayStyle}>
+              <Animated.View
+                style={[styles.picker, pickerStyle, pickerStyleOverrides]}
+              >
+                <ScrollView
+                  ref={this.updateScrollRef}
+                  style={styles.scroll}
+                  scrollEnabled={visibleItemCount < itemCount}
+                  contentContainerStyle={styles.scrollContainer}
+                >
+                  {this.renderItems()}
+                </ScrollView>
+              </Animated.View>
             </View>
-          </Animated.View>
+          </TouchableWithoutFeedback>
         </Modal>
       </View>
     );
