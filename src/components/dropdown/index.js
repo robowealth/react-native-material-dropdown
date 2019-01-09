@@ -576,7 +576,7 @@ export default class Dropdown extends PureComponent {
       disabled,
       hitSlop,
       pressRetentionOffset,
-      onPress: this.onPress,
+      onPress: this.props.onPress || this.onPress,
       testID,
       nativeID,
       accessible,
